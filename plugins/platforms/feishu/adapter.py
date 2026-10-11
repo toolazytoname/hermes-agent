@@ -92,6 +92,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
+from plugins.platforms.feishu.feishu_documents import extract_text_document, resolve_reply_documents
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
@@ -3077,20 +3078,8 @@ class FeishuAdapter(BasePlatformAdapter):
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
-        if not cached_path or not media_type.startswith("text/"):
-            return ""
-        try:
-            if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
-                return ""
-            ext = Path(cached_path).suffix.lower()
-            if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
-                return ""
-            content = Path(cached_path).read_text(encoding="utf-8-sig")
-            display_name = self._display_name_from_cached_path(cached_path)
-            return f"[Content of {display_name}]:\n{content}"
-        except (OSError, UnicodeDecodeError):
-            logger.warning("[Feishu] Failed to inject text document content from %s", cached_path, exc_info=True)
-            return ""
+        return extract_text_document(cached_path, media_type, max_bytes=_MAX_TEXT_INJECT_BYTES,
+                                     display_name=self._display_name_from_cached_path)
 
     async def _fetch_message_resource(self, *, message_id: str, file_key: str, resource_type: str) -> Any:
         """GET im/v1/messages/{id}/resources/{key}; returns the SDK response (caller checks success)."""
@@ -3347,6 +3336,10 @@ class FeishuAdapter(BasePlatformAdapter):
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type, raw_content=raw_content, mentions=parent_mentions,
             )
+            text, cacheable = await resolve_reply_documents(self, message_id, msg_type, raw_content,
+                                                           parent_mentions, text)
+            if not cacheable:
+                return text
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)
