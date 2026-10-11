@@ -3078,7 +3078,11 @@ class FeishuAdapter(BasePlatformAdapter):
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
-        if not cached_path or not media_type.startswith("text/"):
+        # Feishu serves uploaded .md/.txt as application/octet-stream too.
+        declared_text = Path(cached_path).suffix.lower() in {".txt", ".md"}
+        if not cached_path or not (media_type.startswith("text/") or (
+            declared_text and media_type in {"", "application/octet-stream"}
+        )):
             return ""
         try:
             if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
@@ -3348,6 +3352,23 @@ class FeishuAdapter(BasePlatformAdapter):
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type, raw_content=raw_content, mentions=parent_mentions,
             )
+            # Quoted file messages otherwise contribute only a filename placeholder.
+            # Resolve only this referenced message, using the same bot and bounded
+            # document extraction as direct uploads; content remains quoted user data.
+            normalized = self._normalize(msg_type, raw_content, parent_mentions)
+            if normalized.media_refs:
+                paths, types = await self._download_feishu_message_resources(
+                    message_id=message_id, normalized=normalized,
+                )
+                parts = [text] if text else []
+                for path, media_type in zip(paths, types):
+                    extracted = await self._maybe_extract_text_document(path, media_type)
+                    parts.append(extracted or f"[Referenced attachment saved at: {path}; content not inlined]")
+                if len(paths) < len(normalized.media_refs):
+                    # Do not cache a transient denial/failure as permanently absent.
+                    parts.append("[Referenced attachment download failed; original content unavailable; retry message resource retrieval]")
+                    return "\n\n".join(parts)
+                text = "\n\n".join(parts)
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)

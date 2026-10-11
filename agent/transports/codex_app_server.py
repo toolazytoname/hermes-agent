@@ -164,9 +164,9 @@ class CodexAppServerClient:
 
     def initialize(
         self, client_name: str = "hermes", client_title: str = "Hermes Agent",
-        client_version: str = "0.1", capabilities: Optional[dict] = None, timeout: float = 10.0,
+        client_version: str = "0.1", capabilities: Optional[dict] = None, timeout: float = 120.0,
     ) -> dict:
-        """Send ``initialize`` + ``initialized``; return the server's InitializeResponse."""
+        """Handshake with a bounded cold-start budget (slow hosts can take over a minute)."""
         if self._initialized:
             raise RuntimeError("already initialized")
         params = {

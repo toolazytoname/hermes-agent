@@ -96,3 +96,27 @@ def test_stdout_eof_fails_in_flight_request_promptly():
     assert client._pending == {}
     client._fail_pending_requests("codex app-server client is closing")  # idempotent
     client._proc.stdout.close()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_initialize_tolerates_cold_start_but_honors_explicit_deadline(tmp_path):
+    """A slow process launch is not a dead server; explicit caller budgets still bind."""
+    import sys
+    server = tmp_path / "slow-app-server"
+    server.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys, time\n"
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if request.get('method') == 'initialize':\n"
+        "        time.sleep(12)\n"
+        "        print(json.dumps({'id': request['id'], 'result': {'userAgent': 'cold-server'}}), flush=True)\n"
+    )
+    server.chmod(0o700)
+    with CodexAppServerClient(codex_bin=str(server)) as client:
+        assert client.initialize()["userAgent"] == "cold-server"
+        assert client._initialized
+    with CodexAppServerClient(codex_bin=str(server)) as client:
+        with pytest.raises(TimeoutError, match="initialize"):
+            client.initialize(timeout=0.1)
+        assert not client._initialized
